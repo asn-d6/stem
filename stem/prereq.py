@@ -2,13 +2,12 @@
 # See LICENSE for licensing information
 
 """
-Checks for stem dependencies. We require python 2.6 or greater (including the
-3.x series), but note we'll be bumping our requirements to python 2.7 in stem
-2.0. Other requirements for complete functionality are...
+Checks for stem dependencies.
 
-* cryptography module
-
-  * validating descriptor signature integrity
+Aside from Python itself Stem only has soft dependencies, which is to say
+module unavailability only impacts features that require it. For example,
+descriptor signature validation requires 'cryptography'. If unavailable
+stem will still read descriptors - just without signature checks.
 
 ::
 
@@ -22,9 +21,13 @@ Checks for stem dependencies. We require python 2.6 or greater (including the
 """
 
 import functools
+import hashlib
 import inspect
 import platform
 import sys
+
+# TODO: in stem 2.x consider replacing these functions with requirement
+# annotations (like our tests)
 
 CRYPTO_UNAVAILABLE = "Unable to import the cryptography module. Because of this we'll be unable to verify descriptor signature integrity. You can get cryptography from: https://pypi.org/project/cryptography/"
 ZSTD_UNAVAILABLE = 'ZSTD compression requires the zstandard module (https://pypi.org/project/zstandard/)'
@@ -52,6 +55,9 @@ def _is_python_26():
   Checks if we're running python 2.6. This isn't for users as it'll be removed
   in stem 2.0 (when python 2.6 support goes away).
 
+  .. deprecated:: 1.8.0
+     Stem 2.x will remove this method along with Python 2.x support.
+
   :returns: **True** if we're running python 2.6, **False** otherwise
   """
 
@@ -65,7 +71,7 @@ def is_python_27():
   Checks if we're running python 2.7 or above (including the 3.x series).
 
   .. deprecated:: 1.5.0
-     Function lacks much utility and will be eventually removed.
+     Stem 2.x will remove this method along with Python 2.x support.
 
   :returns: **True** if we meet this requirement and **False** otherwise
   """
@@ -78,6 +84,9 @@ def is_python_27():
 def is_python_3():
   """
   Checks if we're in the 3.0 - 3.x range.
+
+  .. deprecated:: 1.8.0
+     Stem 2.x will remove this method along with Python 2.x support.
 
   :returns: **True** if we meet this requirement and **False** otherwise
   """
@@ -114,14 +123,20 @@ def is_sqlite_available():
     return False
 
 
-def is_crypto_available():
+def is_crypto_available(ed25519 = False):
   """
   Checks if the cryptography functions we use are available. This is used for
   verifying relay descriptor signatures.
 
+  :param bool ed25519: check for `ed25519 support
+    <https://cryptography.io/en/latest/hazmat/primitives/asymmetric/ed25519/>`_,
+    which requires both cryptography version 2.6 and OpenSSL support
+
   :returns: **True** if we can use the cryptography module and **False**
     otherwise
   """
+
+  from stem.util import log
 
   try:
     from cryptography.utils import int_from_bytes, int_to_bytes
@@ -134,9 +149,18 @@ def is_crypto_available():
     if not hasattr(rsa.RSAPrivateKey, 'sign'):
       raise ImportError()
 
+    if ed25519:
+      # The following import confirms cryptography support (ie. version 2.6+),
+      # whereas ed25519_supported() checks for OpenSSL bindings.
+
+      from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+      if not hasattr(backend, 'ed25519_supported') or not backend.ed25519_supported():
+        log.log_once('stem.prereq._is_crypto_ed25519_supported', log.INFO, ED25519_UNSUPPORTED)
+        return False
+
     return True
   except ImportError:
-    from stem.util import log
     log.log_once('stem.prereq.is_crypto_available', log.INFO, CRYPTO_UNAVAILABLE)
     return False
 
@@ -240,23 +264,19 @@ def _is_lru_cache_available():
     return hasattr(functools, 'lru_cache')
 
 
-def _is_crypto_ed25519_supported():
+def _is_sha3_available():
   """
-  Checks if ed25519 is supported by current versions of the cryptography
-  package and OpenSSL. This is used for verifying ed25519 certificates in relay
-  descriptor signatures.
-
-  :returns: **True** if ed25519 is supported and **False** otherwise
+  Check if hashlib has sha3 support. This requires Python 3.6+ *or* the `pysha3
+  module <https://github.com/tiran/pysha3>`_.
   """
 
-  if not is_crypto_available():
-    return False
+  # If pysha3 is present then importing sha3 will monkey patch the methods we
+  # want onto hashlib.
 
-  from stem.util import log
-  from cryptography.hazmat.backends.openssl.backend import backend
+  if not hasattr(hashlib, 'sha3_256') or not hasattr(hashlib, 'shake_256'):
+    try:
+      import sha3
+    except ImportError:
+      pass
 
-  if hasattr(backend, 'ed25519_supported') and backend.ed25519_supported():
-    return True
-  else:
-    log.log_once('stem.prereq._is_crypto_ed25519_supported', log.INFO, ED25519_UNSUPPORTED)
-    return False
+  return hasattr(hashlib, 'sha3_256') and hasattr(hashlib, 'shake_256')
